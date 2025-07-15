@@ -193,21 +193,28 @@ class PDFTransactionParser:
                 if not text:
                     continue
                 
+                logger.info(f"CIMB parser processing page text: {text[:1000]}")
+                
                 lines = text.split('\n')
                 in_transaction_section = False
                 continuation_line = ""
                 
-                for line in lines:
+                for i, line in enumerate(lines):
                     line = line.strip()
+                    logger.debug(f"Line {i}: '{line}'")
                     
-                    # Check for transaction section headers
-                    if "Date" in line and "Description" in line and "Amount" in line:
+                    # Check for transaction section headers - more flexible matching
+                    if ("Date" in line and "Description" in line) or \
+                       ("Date" in line and "Cheque" in line) or \
+                       ("Transaction Details" in line):
                         in_transaction_section = True
+                        logger.info(f"Found transaction section at line {i}: {line}")
                         continue
                     
                     # Check if we've reached the end
-                    if "ENDING BALANCE" in line or "Total" in line:
+                    if "ENDING BALANCE" in line or "Total" in line or "Balance B/F" in line:
                         in_transaction_section = False
+                        logger.info(f"End of transaction section at line {i}: {line}")
                         continue
                     
                     if not in_transaction_section:
@@ -218,47 +225,75 @@ class PDFTransactionParser:
                         line = continuation_line + " " + line
                         continuation_line = ""
                     
-                    # CIMB transaction pattern: Date Description ChequeNo Amount Balance
-                    date_pattern = r'(\d{2}/\d{2}/\d{4})'
+                    # CIMB transaction pattern - more flexible
+                    # Look for date pattern followed by description and amounts
+                    date_pattern = r'(\d{2}/\d{2}/\d{4}|\d{2}/\d{2})'
                     amount_pattern = r'([\d,]+\.\d{2})'
                     
-                    match = re.search(f'{date_pattern}(.+?){amount_pattern}.*?{amount_pattern}', line)
+                    # Try multiple patterns
+                    patterns = [
+                        f'{date_pattern}(.+?){amount_pattern}.*?{amount_pattern}',
+                        f'{date_pattern}(.+?){amount_pattern}',
+                        f'{date_pattern}(.+)'
+                    ]
                     
-                    if match:
-                        date_str = match.group(1)
-                        description = match.group(2).strip()
-                        amount_str = match.group(3)
-                        balance_str = match.group(4)
-                        
-                        # Parse date
-                        try:
-                            transaction_date = datetime.strptime(date_str, '%d/%m/%Y').date()
-                        except ValueError:
-                            continue
-                        
-                        # Parse amount
-                        try:
-                            amount = float(amount_str.replace(',', ''))
-                            balance = float(balance_str.replace(',', ''))
-                        except ValueError:
-                            continue
-                        
-                        # Determine transaction type
-                        transaction_type = 'debit' if amount > 0 else 'credit'
-                        
-                        transactions.append({
-                            'date': transaction_date.isoformat(),
-                            'description': description,
-                            'amount': amount,
-                            'balance': balance,
-                            'transaction_type': transaction_type,
-                            'bank': 'cimb'
-                        })
-                    else:
+                    matched = False
+                    for pattern in patterns:
+                        match = re.search(pattern, line)
+                        if match:
+                            logger.info(f"Pattern matched: {pattern} on line: {line}")
+                            
+                            date_str = match.group(1)
+                            description = match.group(2).strip()
+                            
+                            # Try to find amounts in the line
+                            amounts = re.findall(amount_pattern, line)
+                            logger.info(f"Found amounts: {amounts}")
+                            
+                            if amounts:
+                                amount_str = amounts[0]
+                                balance_str = amounts[1] if len(amounts) > 1 else amounts[0]
+                                
+                                # Parse date - handle both DD/MM/YYYY and DD/MM formats
+                                try:
+                                    if len(date_str) == 5:  # DD/MM format
+                                        date_str = f"{date_str}/2018"  # Add year from statement
+                                    transaction_date = datetime.strptime(date_str, '%d/%m/%Y').date()
+                                except ValueError:
+                                    logger.warning(f"Failed to parse date: {date_str}")
+                                    continue
+                                
+                                # Parse amount
+                                try:
+                                    amount = float(amount_str.replace(',', ''))
+                                    balance = float(balance_str.replace(',', ''))
+                                except ValueError:
+                                    logger.warning(f"Failed to parse amounts: {amount_str}, {balance_str}")
+                                    continue
+                                
+                                # Determine transaction type
+                                transaction_type = 'debit' if amount > 0 else 'credit'
+                                
+                                transactions.append({
+                                    'date': transaction_date.isoformat(),
+                                    'description': description,
+                                    'amount': amount,
+                                    'balance': balance,
+                                    'transaction_type': transaction_type,
+                                    'bank': 'cimb'
+                                })
+                                
+                                logger.info(f"Added transaction: {description} - {amount}")
+                                matched = True
+                                break
+                    
+                    if not matched:
                         # Check if this might be a continuation line
-                        if line and not re.search(r'\d{2}/\d{2}/\d{4}', line):
+                        if line and not re.search(r'\d{2}/\d{2}', line) and len(line) > 5:
                             continuation_line = line
+                            logger.debug(f"Continuation line: {line}")
         
+        logger.info(f"CIMB parser found {len(transactions)} transactions")
         return transactions
     
     def _parse_alliance(self, pdf_path: str) -> List[Dict[str, Any]]:
