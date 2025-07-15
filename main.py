@@ -124,10 +124,26 @@ async def process_pdf(
                 )
         
         # Initialize PDF parser
-        parser = PDFTransactionParser()
+        try:
+            parser = PDFTransactionParser()
+            logger.info(f"PDF parser initialized successfully")
+        except Exception as e:
+            logger.error(f"Failed to initialize PDF parser: {str(e)}")
+            raise HTTPException(
+                status_code=500,
+                detail=f"PDF parser initialization failed: {str(e)}"
+            )
         
         # Process the PDF
-        result = parser.process_pdf(temp_file_path, processing_id)
+        try:
+            result = parser.process_pdf(temp_file_path, processing_id)
+            logger.info(f"PDF processing result: {result}")
+        except Exception as e:
+            logger.error(f"PDF processing failed: {str(e)}")
+            raise HTTPException(
+                status_code=500,
+                detail=f"PDF processing failed: {str(e)}"
+            )
         
         # Clean up temporary file
         if temp_file_path and os.path.exists(temp_file_path):

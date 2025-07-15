@@ -42,11 +42,20 @@ class PDFTransactionParser:
         start_time = datetime.now()
         
         try:
+            logger.info(f"Opening PDF file: {pdf_path}")
+            
             # Extract text from PDF
             with pdfplumber.open(pdf_path) as pdf:
+                logger.info(f"PDF opened successfully, pages: {len(pdf.pages)}")
                 all_text = ""
-                for page in pdf.pages:
-                    all_text += page.extract_text() + "\n"
+                for i, page in enumerate(pdf.pages):
+                    page_text = page.extract_text()
+                    logger.info(f"Page {i+1} text length: {len(page_text) if page_text else 0}")
+                    if page_text:
+                        all_text += page_text + "\n"
+                
+                logger.info(f"Total extracted text length: {len(all_text)}")
+                logger.info(f"First 500 characters: {all_text[:500]}")
             
             # Detect bank type
             bank_type = self.detect_bank_type(all_text)
@@ -58,7 +67,14 @@ class PDFTransactionParser:
                 raise ValueError(f"Unsupported bank type: {bank_type}")
             
             # Parse transactions
+            logger.info(f"Starting transaction parsing with {bank_type} parser")
             transactions = parser_func(pdf_path)
+            logger.info(f"Parsed {len(transactions)} transactions")
+            
+            if transactions:
+                logger.info(f"Sample transaction: {transactions[0]}")
+            else:
+                logger.warning("No transactions found during parsing")
             
             # Generate CSV content
             csv_content = self._generate_csv(transactions, bank_type)
