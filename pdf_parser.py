@@ -184,117 +184,232 @@ class PDFTransactionParser:
         return transactions
     
     def _parse_cimb(self, pdf_path: str) -> List[Dict[str, Any]]:
-        """Parse CIMB Bank PDF statement"""
+        """Parse CIMB Bank PDF statement using reference format"""
         transactions = []
+        in_transaction_table = False
+        current_transaction = None
         
         with pdfplumber.open(pdf_path) as pdf:
-            for page in pdf.pages:
+            logger.info(f"CIMB parser processing PDF with {len(pdf.pages)} pages")
+            
+            for page_num, page in enumerate(pdf.pages, 1):
                 text = page.extract_text()
-                if not text:
-                    continue
-                
-                logger.info(f"CIMB parser processing page text: {text[:1000]}")
-                
                 lines = text.split('\n')
-                in_transaction_section = False
-                continuation_line = ""
                 
-                for i, line in enumerate(lines):
+                for line_num, line in enumerate(lines):
                     line = line.strip()
-                    logger.debug(f"Line {i}: '{line}'")
-                    
-                    # Check for transaction section headers - more flexible matching
-                    if ("Date" in line and "Description" in line) or \
-                       ("Date" in line and "Cheque" in line) or \
-                       ("Transaction Details" in line):
-                        in_transaction_section = True
-                        logger.info(f"Found transaction section at line {i}: {line}")
+                    if not line:
                         continue
                     
-                    # Check if we've reached the end
-                    if "ENDING BALANCE" in line or "Total" in line or "Balance B/F" in line:
-                        in_transaction_section = False
-                        logger.info(f"End of transaction section at line {i}: {line}")
+                    logger.debug(f"Line {line_num + 1}: {line}")
+                    
+                    # Detect start of transaction table for CIMB Bank
+                    if 'Date Description Cheque / Ref No Withdrawal Deposits Tax Balance' in line:
+                        logger.info("Found CIMB Bank transaction table header")
+                        in_transaction_table = True
                         continue
                     
-                    if not in_transaction_section:
+                    # Skip bilingual header line
+                    if 'Tarikh Diskripsi No Cek / Rujukan Pengeluaran Deposit Cukai Baki' in line:
+                        logger.info("Skipping bilingual header")
                         continue
                     
-                    # Handle continuation lines
-                    if continuation_line:
-                        line = continuation_line + " " + line
-                        continuation_line = ""
+                    # Skip amount header line
+                    if line == '(RM) (RM) (RM) (RM)':
+                        logger.info("Skipping amount header")
+                        continue
                     
-                    # CIMB transaction pattern - more flexible
-                    # Look for date pattern followed by description and amounts
-                    date_pattern = r'(\d{2}/\d{2}/\d{4}|\d{2}/\d{2})'
-                    amount_pattern = r'([\d,]+\.\d{2})'
+                    # Check for OPENING BALANCE
+                    if 'OPENING BALANCE' in line:
+                        logger.info("Found OPENING BALANCE")
+                        continue
                     
-                    # Try multiple patterns
-                    patterns = [
-                        f'{date_pattern}(.+?){amount_pattern}.*?{amount_pattern}',
-                        f'{date_pattern}(.+?){amount_pattern}',
-                        f'{date_pattern}(.+)'
-                    ]
+                    # Check for CLOSING BALANCE to stop processing
+                    if 'CLOSING BALANCE' in line or 'BAKI PENUTUP' in line:
+                        logger.info("Found CLOSING BALANCE - stopping transaction processing")
+                        if current_transaction:
+                            transactions.append(current_transaction)
+                            current_transaction = None
+                        break
                     
-                    matched = False
-                    for pattern in patterns:
-                        match = re.search(pattern, line)
-                        if match:
-                            logger.info(f"Pattern matched: {pattern} on line: {line}")
+                    if not in_transaction_table:
+                        continue
+                    
+                    # CIMB Bank transaction pattern: DD/MM/YYYY at start of line
+                    date_pattern = r'^(\d{2}/\d{2}/\d{4})\s+(.+)$'
+                    date_match = re.search(date_pattern, line)
+                    
+                    if date_match:
+                        # If we have a previous transaction, finalize it
+                        if current_transaction:
+                            transactions.append(current_transaction)
+                        
+                        logger.info("Found CIMB Bank transaction start")
+                        
+                        date_str = date_match.group(1)  # DD/MM/YYYY format
+                        rest_of_line = date_match.group(2).strip()
+                        
+                        # Convert date format
+                        try:
+                            transaction_date = datetime.strptime(date_str, '%d/%m/%Y').date()
                             
-                            date_str = match.group(1)
-                            description = match.group(2).strip()
+                            # Initialize transaction
+                            current_transaction = {
+                                'date': transaction_date.isoformat(),
+                                'description': '',
+                                'cheque_no': '',
+                                'amount': 0.0,
+                                'balance': 0.0,
+                                'transaction_type': 'debit',
+                                'bank': 'cimb',
+                                'is_parsing': True
+                            }
                             
-                            # Try to find amounts in the line
-                            amounts = re.findall(amount_pattern, line)
-                            logger.info(f"Found amounts: {amounts}")
+                            # Parse the rest of the line to extract description and amounts
+                            self._parse_cimb_transaction_line(current_transaction, rest_of_line)
                             
-                            if amounts:
-                                amount_str = amounts[0]
-                                balance_str = amounts[1] if len(amounts) > 1 else amounts[0]
-                                
-                                # Parse date - handle both DD/MM/YYYY and DD/MM formats
-                                try:
-                                    if len(date_str) == 5:  # DD/MM format
-                                        date_str = f"{date_str}/2018"  # Add year from statement
-                                    transaction_date = datetime.strptime(date_str, '%d/%m/%Y').date()
-                                except ValueError:
-                                    logger.warning(f"Failed to parse date: {date_str}")
-                                    continue
-                                
-                                # Parse amount
-                                try:
-                                    amount = float(amount_str.replace(',', ''))
-                                    balance = float(balance_str.replace(',', ''))
-                                except ValueError:
-                                    logger.warning(f"Failed to parse amounts: {amount_str}, {balance_str}")
-                                    continue
-                                
-                                # Determine transaction type
-                                transaction_type = 'debit' if amount > 0 else 'credit'
-                                
-                                transactions.append({
-                                    'date': transaction_date.isoformat(),
-                                    'description': description,
-                                    'amount': amount,
-                                    'balance': balance,
-                                    'transaction_type': transaction_type,
-                                    'bank': 'cimb'
-                                })
-                                
-                                logger.info(f"Added transaction: {description} - {amount}")
-                                matched = True
-                                break
-                    
-                    if not matched:
-                        # Check if this might be a continuation line
-                        if line and not re.search(r'\d{2}/\d{2}', line) and len(line) > 5:
-                            continuation_line = line
-                            logger.debug(f"Continuation line: {line}")
+                            logger.info(f"Started transaction: {current_transaction['description']} - {current_transaction['amount']}")
+                            
+                        except ValueError as e:
+                            logger.warning(f"Error parsing date {date_str}: {e}")
+                            continue
+                    else:
+                        # This might be a continuation line for the current transaction
+                        if current_transaction and current_transaction.get('is_parsing', False):
+                            logger.debug("Processing continuation line for current transaction")
+                            self._parse_cimb_continuation_line(current_transaction, line)
+                        elif current_transaction:
+                            # Transaction is complete, but this might be additional info
+                            logger.debug("Processing additional info for complete transaction")
+                            self._parse_cimb_continuation_line(current_transaction, line)
+                
+                # Add any remaining transaction
+                if current_transaction:
+                    transactions.append(current_transaction)
+                    current_transaction = None
+        
+        # Clean up transactions
+        self._finalize_cimb_transactions(transactions)
         
         logger.info(f"CIMB parser found {len(transactions)} transactions")
         return transactions
+    
+    def _parse_cimb_transaction_line(self, transaction, line):
+        """Parse a CIMB transaction line to extract description, reference, and amounts"""
+        # Look for amounts at the end of the line (two consecutive amounts typically)
+        amount_pattern = r'([\d,]+\.\d{2})\s+([\d,]+\.\d{2})\s*$'
+        amount_match = re.search(amount_pattern, line)
+        
+        if amount_match:
+            # Found amounts - extract them
+            transaction['amount'] = float(amount_match.group(1).replace(',', ''))
+            transaction['balance'] = float(amount_match.group(2).replace(',', ''))
+            
+            # The part before amounts could be description + optional cheque number
+            description_part = line[:amount_match.start()].strip()
+            
+            # Check if there's a reference number at the end of the description part
+            ref_pattern = r'^(.+?)\s+([A-Z0-9]{8,})\s*$'
+            ref_match = re.search(ref_pattern, description_part)
+            
+            if ref_match:
+                # Found description + reference number on same line
+                transaction['description'] = ref_match.group(1).strip()
+                transaction['cheque_no'] = ref_match.group(2).strip()
+            else:
+                # Just description, no reference number on same line
+                transaction['description'] = description_part
+            
+            transaction['is_parsing'] = False  # Complete transaction
+        else:
+            # No amounts found, this is just the description start
+            transaction['description'] = line.strip()
+            # Keep parsing for continuation lines
+    
+    def _parse_cimb_continuation_line(self, transaction, line):
+        """Parse a continuation line for a CIMB transaction"""
+        # Check if this line contains amounts (end of transaction)
+        amount_pattern = r'([\d,]+\.\d{2})\s+([\d,]+\.\d{2})\s*$'
+        amount_match = re.search(amount_pattern, line)
+        
+        if amount_match:
+            # Found amounts - this completes the transaction
+            if transaction['amount'] == 0.0:  # Only set if not already set
+                transaction['amount'] = float(amount_match.group(1).replace(',', ''))
+            transaction['balance'] = float(amount_match.group(2).replace(',', ''))
+            
+            # The rest might be additional description before the amounts
+            description_part = line[:amount_match.start()].strip()
+            if description_part:
+                if transaction['description']:
+                    transaction['description'] += f" {description_part}"
+                else:
+                    transaction['description'] = description_part
+            
+            transaction['is_parsing'] = False  # Complete transaction
+        else:
+            # Check if this is a numeric continuation of cheque number (like "1509")
+            numeric_pattern = r'^\d{1,4}$'
+            if re.match(numeric_pattern, line.strip()) and transaction['cheque_no']:
+                # This is likely a continuation of the cheque number
+                transaction['cheque_no'] += line.strip()
+                logger.debug(f"Extended cheque number to: {transaction['cheque_no']}")
+            else:
+                # This is additional description
+                # Skip obvious non-description lines
+                skip_patterns = [
+                    r'^\s*$',  # Empty lines
+                    r'PRIVATE TRANSACTION',
+                    r'^\s*[\d,]+\.\d{2}\s*$',  # Just amounts
+                ]
+                
+                should_skip = False
+                for pattern in skip_patterns:
+                    if re.match(pattern, line, re.IGNORECASE):
+                        should_skip = True
+                        break
+                
+                if not should_skip and line.strip():
+                    if transaction['description']:
+                        transaction['description'] += f" {line.strip()}"
+                    else:
+                        transaction['description'] = line.strip()
+                    logger.debug(f"Added to description: {line.strip()}")
+    
+    def _finalize_cimb_transactions(self, transactions):
+        """Finalize CIMB transactions by cleaning up and determining debit/credit"""
+        # Remove incomplete transactions
+        transactions[:] = [t for t in transactions if not t.get('is_parsing', False)]
+        
+        # Clean up transaction objects
+        for transaction in transactions:
+            transaction.pop('is_parsing', None)
+            
+            # Clean up description and reference
+            transaction['description'] = transaction['description'].strip()
+            if 'cheque_no' in transaction:
+                transaction['cheque_no'] = transaction['cheque_no'].strip()
+        
+        # Determine debit/credit based on balance changes
+        for i, transaction in enumerate(transactions):
+            if i == 0:
+                # First transaction - assume it's based on amount sign
+                if transaction['balance'] > (transaction['balance'] - transaction['amount']):
+                    transaction['transaction_type'] = 'credit'
+                else:
+                    transaction['transaction_type'] = 'debit'
+                    transaction['amount'] = -abs(transaction['amount'])
+            else:
+                # Compare with previous transaction balance
+                prev_balance = transactions[i-1]['balance']
+                if transaction['balance'] > prev_balance:
+                    transaction['transaction_type'] = 'credit'
+                    transaction['amount'] = abs(transaction['amount'])
+                else:
+                    transaction['transaction_type'] = 'debit'
+                    transaction['amount'] = -abs(transaction['amount'])
+            
+            logger.debug(f"Processed transaction {i+1}: Amount = {transaction['amount']}")
     
     def _parse_alliance(self, pdf_path: str) -> List[Dict[str, Any]]:
         """Parse Alliance Bank PDF statement"""
