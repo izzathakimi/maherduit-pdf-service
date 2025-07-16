@@ -167,17 +167,20 @@ class PDFTransactionParser:
                         line = continuation_line + " " + line
                         continuation_line = ""
                     
-                    # Maybank transaction pattern: Date Amount Balance Description
+                    # Maybank transaction pattern: Date Description Amount+/- Balance
                     date_pattern = r'(\d{2}/\d{2}/\d{4})'
-                    amount_pattern = r'([\d,]+\.\d{2})'
+                    # Look for amount with +/- sign and balance at the end
+                    transaction_pattern = r'(\d{2}/\d{2}/\d{4})\s+(.+?)\s+([\d,]+\.\d{2}[+-])\s+([\d,]+\.\d{2})'
                     
-                    match = re.search(f'{date_pattern}.*?{amount_pattern}.*?{amount_pattern}(.+)', line)
+                    match = re.search(transaction_pattern, line)
                     
                     if match:
                         date_str = match.group(1)
-                        amount_str = match.group(2)
-                        balance_str = match.group(3)
-                        description = match.group(4).strip()
+                        description = match.group(2).strip()
+                        amount_str = match.group(3)
+                        balance_str = match.group(4)
+                        
+                        logger.info(f"Maybank parser: Found transaction match - Date: {date_str}, Desc: {description}, Amount: {amount_str}, Balance: {balance_str}")
                         
                         # Parse date
                         try:
@@ -185,15 +188,20 @@ class PDFTransactionParser:
                         except ValueError:
                             continue
                         
-                        # Parse amount
+                        # Parse amount (handle +/- signs)
                         try:
-                            amount = float(amount_str.replace(',', ''))
+                            # Extract the sign and amount
+                            if amount_str.endswith('+'):
+                                amount = float(amount_str[:-1].replace(',', ''))
+                                transaction_type = 'credit'  # Money coming in
+                            else:  # ends with '-'
+                                amount = float(amount_str[:-1].replace(',', ''))
+                                transaction_type = 'debit'   # Money going out
+                            
                             balance = float(balance_str.replace(',', ''))
                         except ValueError:
+                            logger.warning(f"Maybank parser: Failed to parse amount/balance: {amount_str}, {balance_str}")
                             continue
-                        
-                        # Determine transaction type based on balance change
-                        transaction_type = 'debit' if amount > 0 else 'credit'
                         
                         transactions.append({
                             'date': transaction_date.isoformat(),
