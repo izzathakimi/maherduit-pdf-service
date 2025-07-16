@@ -24,10 +24,13 @@ class PDFTransactionParser:
         """Detect bank type from PDF text content"""
         text_lower = pdf_text.lower()
         
+        # Check for credit card statements first (more specific)
+        if ('credit card' in text_lower or 'mastercard' in text_lower or 'visa' in text_lower) and \
+           ('statement' in text_lower or 'card statement' in text_lower):
+            return 'credit_card'
+        
         # Check for bank-specific keywords
-        if 'maybank' in text_lower or 'malayan banking' in text_lower:
-            if 'credit card' in text_lower or 'mastercard' in text_lower or 'visa' in text_lower:
-                return 'credit_card'
+        if 'maybank' in text_lower or 'malayan banking' in text_lower or 'maybank islamic' in text_lower:
             return 'maybank'
         elif 'cimb' in text_lower or 'commerce international' in text_lower:
             return 'cimb'
@@ -37,7 +40,7 @@ class PDFTransactionParser:
         # Default fallback
         return 'maybank'
     
-    def process_pdf(self, pdf_path: str, processing_id: str) -> Dict[str, Any]:
+    def process_pdf(self, pdf_path: str, processing_id: str, bank_type: str = None) -> Dict[str, Any]:
         """Main method to process PDF and extract transactions"""
         start_time = datetime.now()
         
@@ -57,17 +60,21 @@ class PDFTransactionParser:
                 logger.info(f"Total extracted text length: {len(all_text)}")
                 logger.info(f"First 500 characters: {all_text[:500]}")
             
-            # Detect bank type
-            bank_type = self.detect_bank_type(all_text)
-            logger.info(f"Detected bank type: {bank_type}")
+            # Use provided bank type or detect from content
+            if bank_type:
+                logger.info(f"Using provided bank type: {bank_type}")
+                detected_bank_type = bank_type
+            else:
+                detected_bank_type = self.detect_bank_type(all_text)
+                logger.info(f"Auto-detected bank type: {detected_bank_type}")
             
             # Parse based on bank type
-            parser_func = self.supported_banks.get(bank_type)
+            parser_func = self.supported_banks.get(detected_bank_type)
             if not parser_func:
-                raise ValueError(f"Unsupported bank type: {bank_type}")
+                raise ValueError(f"Unsupported bank type: {detected_bank_type}")
             
             # Parse transactions
-            logger.info(f"Starting transaction parsing with {bank_type} parser")
+            logger.info(f"Starting transaction parsing with {detected_bank_type} parser")
             transactions = parser_func(pdf_path)
             logger.info(f"Parsed {len(transactions)} transactions")
             
@@ -77,7 +84,7 @@ class PDFTransactionParser:
                 logger.warning("No transactions found during parsing")
             
             # Generate CSV content
-            csv_content = self._generate_csv(transactions, bank_type)
+            csv_content = self._generate_csv(transactions, detected_bank_type)
             
             # Calculate processing time
             processing_time = (datetime.now() - start_time).total_seconds()
@@ -87,7 +94,7 @@ class PDFTransactionParser:
             
             return {
                 'success': True,
-                'bank_type': bank_type,
+                'bank_type': detected_bank_type,
                 'transactions': transactions,
                 'csv_content': csv_content,
                 'processing_time': processing_time,

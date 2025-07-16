@@ -123,6 +123,33 @@ async def process_pdf(
                     detail=f"Failed to download PDF from Supabase: {str(e)}"
                 )
         
+        # Get bank type from bank account if provided
+        bank_type = None
+        if bank_account_id and supabase:
+            try:
+                # Fetch bank account information
+                bank_account_response = supabase.table('bank_accounts').select('bank_name').eq('id', bank_account_id).single().execute()
+                if bank_account_response.data:
+                    bank_name = bank_account_response.data['bank_name'].lower()
+                    
+                    # Map bank name to parser type
+                    if 'maybank' in bank_name:
+                        bank_type = 'maybank'
+                    elif 'cimb' in bank_name:
+                        bank_type = 'cimb'
+                    elif 'alliance' in bank_name:
+                        bank_type = 'alliance'
+                    elif 'credit' in bank_name:
+                        bank_type = 'credit_card'
+                    else:
+                        bank_type = 'maybank'  # Default fallback
+                        
+                    logger.info(f"Bank account found: {bank_name}, using parser type: {bank_type}")
+                else:
+                    logger.warning(f"Bank account not found for ID: {bank_account_id}")
+            except Exception as e:
+                logger.warning(f"Failed to fetch bank account: {str(e)}")
+        
         # Initialize PDF parser
         try:
             parser = PDFTransactionParser()
@@ -136,7 +163,7 @@ async def process_pdf(
         
         # Process the PDF
         try:
-            result = parser.process_pdf(temp_file_path, processing_id)
+            result = parser.process_pdf(temp_file_path, processing_id, bank_type)
             logger.info(f"PDF processing result: {result}")
         except Exception as e:
             logger.error(f"PDF processing failed: {str(e)}")
