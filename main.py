@@ -36,9 +36,15 @@ app.add_middleware(
 )
 
 # Initialize Supabase client
-supabase_url = os.getenv("SUPABASE_URL")
-supabase_key = os.getenv("SUPABASE_KEY")
-supabase: Client = create_client(supabase_url, supabase_key) if supabase_url and supabase_key else None
+supabase_url = os.getenv("SUPABASE_URL") or os.getenv("NEXT_PUBLIC_SUPABASE_URL")
+supabase_key = os.getenv("SUPABASE_KEY") or os.getenv("SUPABASE_SERVICE_ROLE_KEY")
+
+if supabase_url and supabase_key:
+    logger.info(f"Initializing Supabase client with URL: {supabase_url[:30]}...")
+    supabase: Client = create_client(supabase_url, supabase_key)
+else:
+    logger.warning(f"Supabase client not initialized. URL: {bool(supabase_url)}, Key: {bool(supabase_key)}")
+    supabase: Client = None
 
 class ProcessingResponse:
     def __init__(self, success: bool, message: str, data: Optional[Dict] = None, error: Optional[str] = None):
@@ -60,7 +66,8 @@ async def process_pdf(
     file: Optional[UploadFile] = File(None),
     supabase_url: Optional[str] = Form(None),
     user_id: Optional[str] = Form(None),
-    bank_account_id: Optional[str] = Form(None)
+    bank_account_id: Optional[str] = Form(None),
+    bank_type: Optional[str] = Form(None)
 ):
     """
     Process a PDF bank statement and extract transaction data.
@@ -123,12 +130,14 @@ async def process_pdf(
                     detail=f"Failed to download PDF from Supabase: {str(e)}"
                 )
         
-        # Get bank type from bank account if provided
-        bank_type = None
+        # Get bank type from form data or bank account
+        detected_bank_type = bank_type  # Use the bank_type from form data if provided
+        logger.info(f"Bank type from form data: {bank_type}")
         logger.info(f"Bank account ID provided: {bank_account_id}")
         logger.info(f"Supabase client available: {supabase is not None}")
         
-        if bank_account_id and supabase:
+        # If bank_type not provided in form data, try to fetch from database
+        if not detected_bank_type and bank_account_id and supabase:
             try:
                 logger.info(f"Fetching bank account information for ID: {bank_account_id}")
                 # Fetch bank account information
@@ -141,23 +150,23 @@ async def process_pdf(
                     
                     # Map bank name to parser type
                     if 'maybank' in bank_name:
-                        bank_type = 'maybank'
+                        detected_bank_type = 'maybank'
                     elif 'cimb' in bank_name:
-                        bank_type = 'cimb'
+                        detected_bank_type = 'cimb'
                     elif 'alliance' in bank_name:
-                        bank_type = 'alliance'
+                        detected_bank_type = 'alliance'
                     elif 'credit' in bank_name:
-                        bank_type = 'credit_card'
+                        detected_bank_type = 'credit_card'
                     else:
-                        bank_type = 'maybank'  # Default fallback
+                        detected_bank_type = 'maybank'  # Default fallback
                         
-                    logger.info(f"Bank account found: {bank_name}, using parser type: {bank_type}")
+                    logger.info(f"Bank account found: {bank_name}, using parser type: {detected_bank_type}")
                 else:
                     logger.warning(f"Bank account not found for ID: {bank_account_id}")
             except Exception as e:
                 logger.warning(f"Failed to fetch bank account: {str(e)}")
-        else:
-            logger.warning("Bank account ID not provided or Supabase client not available")
+        elif not detected_bank_type:
+            logger.warning("Bank type not provided and unable to fetch from database")
         
         # Initialize PDF parser
         try:
@@ -172,7 +181,7 @@ async def process_pdf(
         
         # Process the PDF
         try:
-            result = parser.process_pdf(temp_file_path, processing_id, bank_type)
+            result = parser.process_pdf(temp_file_path, processing_id, detected_bank_type)
             logger.info(f"PDF processing result: {result}")
         except Exception as e:
             logger.error(f"PDF processing failed: {str(e)}")
