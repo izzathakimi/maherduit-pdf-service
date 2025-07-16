@@ -76,10 +76,13 @@ class PDFTransactionParser:
                 detected_bank_type = self.detect_bank_type(all_text)
                 logger.info(f"Auto-detected bank type: {detected_bank_type}")
             
+            # Validate bank type is supported
+            if detected_bank_type not in self.supported_banks:
+                logger.warning(f"Unsupported bank type: {detected_bank_type}, falling back to maybank")
+                detected_bank_type = 'maybank'
+            
             # Parse based on bank type
             parser_func = self.supported_banks.get(detected_bank_type)
-            if not parser_func:
-                raise ValueError(f"Unsupported bank type: {detected_bank_type}")
             
             # Parse transactions
             logger.info(f"Starting transaction parsing with {detected_bank_type} parser")
