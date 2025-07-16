@@ -128,7 +128,8 @@ class PDFTransactionParser:
         transactions = []
         
         with pdfplumber.open(pdf_path) as pdf:
-            for page in pdf.pages:
+            logger.info(f"Maybank parser: Processing {len(pdf.pages)} pages")
+            for page_num, page in enumerate(pdf.pages, 1):
                 text = page.extract_text()
                 if not text:
                     continue
@@ -137,21 +138,29 @@ class PDFTransactionParser:
                 in_transaction_section = False
                 continuation_line = ""
                 
-                for line in lines:
+                logger.info(f"Maybank parser: Page {page_num} has {len(lines)} lines")
+                
+                for line_num, line in enumerate(lines, 1):
                     line = line.strip()
                     
                     # Check if we're in transaction section
                     if "URUSNIAGA AKAUN" in line or "ACCOUNT TRANSACTIONS" in line:
+                        logger.info(f"Maybank parser: Found transaction section at page {page_num}, line {line_num}: {line}")
                         in_transaction_section = True
                         continue
                     
                     # Check if we've reached the end
                     if "ENDING BALANCE" in line or "BAKI AKHIR" in line:
+                        logger.info(f"Maybank parser: Found end marker at page {page_num}, line {line_num}: {line}")
                         in_transaction_section = False
                         continue
                     
                     if not in_transaction_section:
                         continue
+                    
+                    # Log lines in transaction section
+                    if line:
+                        logger.info(f"Maybank parser: Transaction line {line_num}: {line}")
                     
                     # Handle continuation lines
                     if continuation_line:
