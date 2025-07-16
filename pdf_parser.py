@@ -24,18 +24,26 @@ class PDFTransactionParser:
         """Detect bank type from PDF text content"""
         text_lower = pdf_text.lower()
         
-        # Check for credit card statements first (more specific)
-        if ('credit card' in text_lower or 'mastercard' in text_lower or 'visa' in text_lower) and \
-           ('statement' in text_lower or 'card statement' in text_lower):
-            return 'credit_card'
-        
-        # Check for bank-specific keywords
+        # Check for bank-specific keywords first (more reliable)
         if 'maybank' in text_lower or 'malayan banking' in text_lower or 'maybank islamic' in text_lower:
+            # Check if it's specifically a credit card statement
+            if 'credit card statement' in text_lower or 'card statement' in text_lower:
+                return 'credit_card'
             return 'maybank'
         elif 'cimb' in text_lower or 'commerce international' in text_lower:
+            if 'credit card statement' in text_lower or 'card statement' in text_lower:
+                return 'credit_card'
             return 'cimb'
         elif 'alliance' in text_lower or 'alliance bank' in text_lower:
+            if 'credit card statement' in text_lower or 'card statement' in text_lower:
+                return 'credit_card'
             return 'alliance'
+        
+        # Only check for generic credit card indicators if no bank is identified
+        if ('credit card' in text_lower and 'statement' in text_lower) or \
+           ('mastercard' in text_lower and 'statement' in text_lower) or \
+           ('visa' in text_lower and 'statement' in text_lower):
+            return 'credit_card'
         
         # Default fallback
         return 'maybank'

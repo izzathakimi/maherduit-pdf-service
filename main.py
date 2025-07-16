@@ -125,12 +125,19 @@ async def process_pdf(
         
         # Get bank type from bank account if provided
         bank_type = None
+        logger.info(f"Bank account ID provided: {bank_account_id}")
+        logger.info(f"Supabase client available: {supabase is not None}")
+        
         if bank_account_id and supabase:
             try:
+                logger.info(f"Fetching bank account information for ID: {bank_account_id}")
                 # Fetch bank account information
                 bank_account_response = supabase.table('bank_accounts').select('bank_name').eq('id', bank_account_id).single().execute()
+                logger.info(f"Bank account query response: {bank_account_response}")
+                
                 if bank_account_response.data:
                     bank_name = bank_account_response.data['bank_name'].lower()
+                    logger.info(f"Bank name from database: {bank_name}")
                     
                     # Map bank name to parser type
                     if 'maybank' in bank_name:
@@ -149,6 +156,8 @@ async def process_pdf(
                     logger.warning(f"Bank account not found for ID: {bank_account_id}")
             except Exception as e:
                 logger.warning(f"Failed to fetch bank account: {str(e)}")
+        else:
+            logger.warning("Bank account ID not provided or Supabase client not available")
         
         # Initialize PDF parser
         try:
