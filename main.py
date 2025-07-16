@@ -39,12 +39,18 @@ app.add_middleware(
 supabase_url = os.getenv("SUPABASE_URL") or os.getenv("NEXT_PUBLIC_SUPABASE_URL")
 supabase_key = os.getenv("SUPABASE_KEY") or os.getenv("SUPABASE_SERVICE_ROLE_KEY")
 
+supabase: Client = None
 if supabase_url and supabase_key:
-    logger.info(f"Initializing Supabase client with URL: {supabase_url[:30]}...")
-    supabase: Client = create_client(supabase_url, supabase_key)
+    try:
+        logger.info(f"Initializing Supabase client with URL: {supabase_url[:30]}...")
+        supabase = create_client(supabase_url, supabase_key)
+        logger.info("Supabase client initialized successfully")
+    except Exception as e:
+        logger.warning(f"Failed to initialize Supabase client: {str(e)}")
+        supabase = None
 else:
     logger.warning(f"Supabase client not initialized. URL: {bool(supabase_url)}, Key: {bool(supabase_key)}")
-    supabase: Client = None
+    supabase = None
 
 class ProcessingResponse:
     def __init__(self, success: bool, message: str, data: Optional[Dict] = None, error: Optional[str] = None):
