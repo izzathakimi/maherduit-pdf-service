@@ -452,16 +452,39 @@ class PDFTransactionParser:
                     if not line:
                         continue
                     
-                    if page_num <= 2:  # Only log first 2 pages to avoid spam
-                        logger.info(f"Alliance Page {page_num}, Line {line_num + 1}: {line}")
+                    # Log all lines for better debugging
+                    logger.info(f"Alliance Page {page_num}, Line {line_num + 1}: {line}")
                     
                     # Check for transaction section start - Alliance specific patterns
-                    if ('Date Transaction Detail' in line or 
-                        'Date Transaction Detai' in line or
-                        'Tarikh Butiran Transaksi' in line or
-                        ('Date' in line and ('Transaction' in line or 'Amount' in line or 'Balance' in line))):
-                        logger.info(f"Found Alliance transaction section header: {line}")
+                    transaction_headers = [
+                        'Date Transaction Detail',
+                        'Date Transaction Detai', 
+                        'Tarikh Butiran Transaksi',
+                        'Date Description',
+                        'Tarikh Keterangan',
+                        'Date Particulars',
+                        'Transaction Details',
+                        'TRANSACTION DETAILS',
+                        'Date Amount Balance',
+                        'Tarikh Jumlah Baki'
+                    ]
+                    
+                    # Check for any transaction header pattern
+                    header_found = False
+                    for header in transaction_headers:
+                        if header in line:
+                            logger.info(f"Found Alliance transaction section header: {line}")
+                            in_transaction_section = True
+                            header_found = True
+                            break
+                    
+                    # Also check for generic patterns
+                    if not header_found and ('Date' in line and ('Transaction' in line or 'Amount' in line or 'Balance' in line or 'Description' in line)):
+                        logger.info(f"Found Alliance generic transaction header: {line}")
                         in_transaction_section = True
+                        header_found = True
+                    
+                    if header_found:
                         continue
                     
                     # Skip bilingual headers
