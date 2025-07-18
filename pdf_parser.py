@@ -651,8 +651,9 @@ class PDFTransactionParser:
             
             transaction['balance'] = balance
             transaction['description'] = description
-            transaction['is_parsing'] = False  # Complete transaction
-            logger.info(f"Alliance: Transaction complete with amount_balance_cr pattern")
+            transaction['is_parsing'] = True  # Keep open for additional description lines
+            transaction['has_amounts'] = True  # Mark that we have amounts but want more description
+            logger.info(f"Alliance: Transaction has amounts but keeping open for additional description lines")
             return
         
         # Fallback to original three amounts pattern
@@ -736,6 +737,17 @@ class PDFTransactionParser:
     
     def _parse_alliance_continuation_line(self, transaction, line):
         """Parse a continuation line for an Alliance Bank transaction"""
+        
+        # If transaction already has amounts, just append description
+        if transaction.get('has_amounts', False):
+            logger.info(f"Alliance: Transaction already has amounts, appending description: '{line}'")
+            if transaction['description']:
+                transaction['description'] += f" {line.strip()}"
+            else:
+                transaction['description'] = line.strip()
+            logger.info(f"Alliance: Updated description: '{transaction['description']}'")
+            return
+        
         # Check if this line contains amounts (end of transaction)
         amount_patterns = [
             r'([\d,]+\.\d{2})\s+([\d,]+\.\d{2})\s+(CR|DR)?\s*$',        # amount balance [CR/DR]
@@ -842,12 +854,13 @@ class PDFTransactionParser:
     
     def _finalize_alliance_transactions(self, transactions):
         """Finalize Alliance Bank transactions by cleaning up"""
-        # Remove incomplete transactions
-        transactions[:] = [t for t in transactions if not t.get('is_parsing', False)]
+        # Remove incomplete transactions (but keep those with amounts even if still parsing)
+        transactions[:] = [t for t in transactions if not t.get('is_parsing', False) or t.get('has_amounts', False)]
         
         # Clean up transaction objects
         for transaction in transactions:
             transaction.pop('is_parsing', None)
+            transaction.pop('has_amounts', None)
             
             # Clean up description
             original_description = transaction['description']
