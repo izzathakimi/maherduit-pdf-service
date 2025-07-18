@@ -816,9 +816,11 @@ class PDFTransactionParser:
         if not should_skip and line.strip():
             if transaction['description']:
                 transaction['description'] += f" {line.strip()}"
+                logger.info(f"Alliance: Appended to description: '{line.strip()}' -> Full description now: '{transaction['description']}'")
             else:
                 transaction['description'] = line.strip()
-            logger.debug(f"Added to Alliance description: {line.strip()}")
+                logger.info(f"Alliance: Started description: '{line.strip()}'")
+            logger.info(f"Alliance: Current full description: '{transaction['description']}'")
     
     def _finalize_alliance_transactions(self, transactions):
         """Finalize Alliance Bank transactions by cleaning up"""
@@ -830,7 +832,9 @@ class PDFTransactionParser:
             transaction.pop('is_parsing', None)
             
             # Clean up description
+            original_description = transaction['description']
             transaction['description'] = transaction['description'].strip()
+            logger.info(f"Alliance: Cleaned description from '{original_description}' to '{transaction['description']}'")
             
             # Ensure amount is properly signed
             if transaction['transaction_type'] == 'debit' and transaction['amount'] > 0:
@@ -838,7 +842,7 @@ class PDFTransactionParser:
             elif transaction['transaction_type'] == 'credit' and transaction['amount'] < 0:
                 transaction['amount'] = abs(transaction['amount'])
             
-            logger.debug(f"Finalized Alliance transaction: {transaction['description']} - {transaction['amount']}")
+            logger.info(f"Alliance: Finalized transaction - Description: '{transaction['description']}' - Amount: {transaction['amount']} - Type: {transaction['transaction_type']}")
     
     def _parse_credit_card(self, pdf_path: str) -> List[Dict[str, Any]]:
         """Parse credit card PDF statement"""
