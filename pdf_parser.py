@@ -527,7 +527,10 @@ class PDFTransactionParser:
                     if date_match:
                         # If we have a previous transaction, finalize it
                         if current_transaction:
-                            transactions.append(current_transaction)
+                            if current_transaction.get('amount') != 0.0 or current_transaction.get('description'):
+                                transactions.append(current_transaction)
+                            else:
+                                logger.warning(f"Discarding incomplete transaction: {current_transaction}")
                         
                         logger.info(f"Found Alliance transaction start with {date_format} format")
                         
@@ -582,8 +585,15 @@ class PDFTransactionParser:
                                 'is_parsing': True
                             }
                             
-                            # Parse the rest of the line
-                            self._parse_alliance_transaction_line(current_transaction, rest_of_line)
+                            # Parse the rest of the line - for multi-line transactions, this might just be the first part
+                            if rest_of_line:
+                                # Check if this line has amounts (single-line transaction)
+                                if re.search(r'[\d,]+\.\d{2}', rest_of_line):
+                                    self._parse_alliance_transaction_line(current_transaction, rest_of_line)
+                                else:
+                                    # This is a multi-line transaction, start building description
+                                    current_transaction['description'] = rest_of_line
+                                    logger.info(f"Started multi-line Alliance transaction: {rest_of_line}")
                             
                             logger.info(f"Started Alliance transaction: {current_transaction['description']} - {current_transaction['amount']}")
                             
@@ -593,7 +603,7 @@ class PDFTransactionParser:
                     else:
                         # This might be a continuation line for the current transaction
                         if current_transaction and current_transaction.get('is_parsing', False):
-                            logger.debug("Processing Alliance continuation line")
+                            logger.info(f"Processing Alliance continuation line: {line}")
                             self._parse_alliance_continuation_line(current_transaction, line)
                 
                 # Add any remaining transaction
@@ -714,16 +724,32 @@ class PDFTransactionParser:
         """Parse a continuation line for an Alliance Bank transaction"""
         # Check if this line contains amounts (end of transaction)
         amount_patterns = [
+            r'([\d,]+\.\d{2})\s+([\d,]+\.\d{2})\s+(CR|DR)?\s*$',        # amount balance [CR/DR]
             r'([\d,]+\.\d{2})\s+([\d,]+\.\d{2})\s+([\d,]+\.\d{2})\s*$',  # withdrawal, deposit, balance
             r'([\d,]+\.\d{2})\s+([\d,]+\.\d{2})\s*$',                    # amount, balance
-            r'([\d,]+\.\d{2})\s*$'                                      # single amount
+            r'([\d,]+\.\d{2})\s+(CR|DR)?\s*$'                           # single amount [CR/DR]
         ]
         
-        for pattern in amount_patterns:
+        for i, pattern in enumerate(amount_patterns):
             match = re.search(pattern, line)
             if match:
-                if len(match.groups()) == 3:
-                    # Three amounts
+                logger.info(f"Alliance continuation pattern {i+1} matched: {match.groups()}")
+                
+                if i == 0:  # amount balance [CR/DR]
+                    amount = float(match.group(1).replace(',', ''))
+                    balance = float(match.group(2).replace(',', ''))
+                    cr_dr = match.group(3) if match.group(3) else ''
+                    
+                    if 'CR' in cr_dr or 'CR' in line.upper():
+                        transaction['amount'] = amount
+                        transaction['transaction_type'] = 'credit'
+                    else:
+                        transaction['amount'] = -amount
+                        transaction['transaction_type'] = 'debit'
+                    
+                    transaction['balance'] = balance
+                    
+                elif i == 1:  # Three amounts (withdrawal, deposit, balance)
                     withdrawal = float(match.group(1).replace(',', ''))
                     deposit = float(match.group(2).replace(',', ''))
                     balance = float(match.group(3).replace(',', ''))
@@ -737,8 +763,7 @@ class PDFTransactionParser:
                     
                     transaction['balance'] = balance
                     
-                elif len(match.groups()) == 2:
-                    # Two amounts
+                elif i == 2:  # Two amounts (amount, balance)
                     amount = float(match.group(1).replace(',', ''))
                     balance = float(match.group(2).replace(',', ''))
                     
@@ -751,11 +776,11 @@ class PDFTransactionParser:
                     
                     transaction['balance'] = balance
                     
-                else:
-                    # Single amount
+                elif i == 3:  # Single amount [CR/DR]
                     amount = float(match.group(1).replace(',', ''))
+                    cr_dr = match.group(2) if match.group(2) else ''
                     
-                    if 'CR' in line.upper():
+                    if 'CR' in cr_dr or 'CR' in line.upper():
                         transaction['amount'] = amount
                         transaction['transaction_type'] = 'credit'
                     else:
