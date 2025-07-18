@@ -628,11 +628,14 @@ class PDFTransactionParser:
         # Alliance Bank format: DESCRIPTION AMOUNT BALANCE [CR]
         # Look for amounts at the end of the line
         
+        logger.info(f"Alliance: Parsing transaction line: '{line}'")
+        
         # First try: description amount balance [CR]
         amount_balance_cr_pattern = r'(.+?)\s+([\d,]+\.\d{2})\s+([\d,]+\.\d{2})\s+(CR|DR)?\s*$'
         match = re.search(amount_balance_cr_pattern, line)
         
         if match:
+            logger.info(f"Alliance: Found amount_balance_cr pattern")
             description = match.group(1).strip()
             amount = float(match.group(2).replace(',', ''))
             balance = float(match.group(3).replace(',', ''))
@@ -649,6 +652,7 @@ class PDFTransactionParser:
             transaction['balance'] = balance
             transaction['description'] = description
             transaction['is_parsing'] = False  # Complete transaction
+            logger.info(f"Alliance: Transaction complete with amount_balance_cr pattern")
             return
         
         # Fallback to original three amounts pattern
@@ -656,6 +660,7 @@ class PDFTransactionParser:
         three_amounts_match = re.search(amount_pattern, line)
         
         if three_amounts_match:
+            logger.info(f"Alliance: Found three amounts pattern")
             # Found three amounts - withdrawal, deposit, balance
             withdrawal = float(three_amounts_match.group(1).replace(',', ''))
             deposit = float(three_amounts_match.group(2).replace(',', ''))
@@ -682,6 +687,7 @@ class PDFTransactionParser:
             two_amounts_match = re.search(two_amount_pattern, line)
             
             if two_amounts_match:
+                logger.info(f"Alliance: Found two amounts pattern")
                 amount = float(two_amounts_match.group(1).replace(',', ''))
                 balance = float(two_amounts_match.group(2).replace(',', ''))
                 
@@ -706,6 +712,7 @@ class PDFTransactionParser:
                 single_match = re.search(single_amount_pattern, line)
                 
                 if single_match:
+                    logger.info(f"Alliance: Found single amount pattern")
                     amount = float(single_match.group(1).replace(',', ''))
                     
                     # Check for CR/DR indicators
@@ -724,7 +731,8 @@ class PDFTransactionParser:
                 else:
                     # No amounts found, this is just the description start
                     transaction['description'] = line.strip()
-                    # Keep parsing for continuation lines
+                    # Keep parsing for continuation lines - DO NOT mark as complete
+                    logger.info(f"Alliance: No amounts found on first line, keeping transaction open for continuation lines")
     
     def _parse_alliance_continuation_line(self, transaction, line):
         """Parse a continuation line for an Alliance Bank transaction"""
