@@ -434,81 +434,338 @@ class PDFTransactionParser:
         transactions = []
         
         with pdfplumber.open(pdf_path) as pdf:
-            for page in pdf.pages:
+            logger.info(f"Alliance parser processing PDF with {len(pdf.pages)} pages")
+            
+            for page_num, page in enumerate(pdf.pages, 1):
                 text = page.extract_text()
                 if not text:
                     continue
                 
+                logger.info(f"Processing Alliance page {page_num}")
+                logger.debug(f"Alliance page {page_num} text preview: {text[:1000]}...")
                 lines = text.split('\n')
                 in_transaction_section = False
-                continuation_line = ""
+                current_transaction = None
                 
-                for line in lines:
+                for line_num, line in enumerate(lines):
                     line = line.strip()
+                    if not line:
+                        continue
                     
-                    # Check for transaction section
-                    if "Date" in line and "Description" in line:
+                    if page_num <= 2:  # Only log first 2 pages to avoid spam
+                        logger.info(f"Alliance Page {page_num}, Line {line_num + 1}: {line}")
+                    
+                    # Check for transaction section start - Alliance specific patterns
+                    if ('Date Transaction Detail' in line or 
+                        'Date Transaction Detai' in line or
+                        'Tarikh Butiran Transaksi' in line or
+                        ('Date' in line and ('Transaction' in line or 'Amount' in line or 'Balance' in line))):
+                        logger.info(f"Found Alliance transaction section header: {line}")
                         in_transaction_section = True
                         continue
                     
-                    # Check if we've reached the end
-                    if "ENDING BALANCE" in line:
+                    # Skip bilingual headers
+                    if ('Tarikh' in line and 'Butiran' in line) or line.strip() in ['(RM)', 'RM']:
+                        logger.info("Skipping Alliance bilingual header")
+                        continue
+                    
+                    # Check for section endings
+                    if ('ENDING BALANCE' in line or 'BAKI AKHIR' in line or 
+                        'CLOSING BALANCE' in line or 'BAKI PENUTUP' in line or
+                        'Total Charges' in line):
+                        logger.info(f"Found Alliance section end: {line}")
+                        if current_transaction:
+                            transactions.append(current_transaction)
+                            current_transaction = None
                         in_transaction_section = False
                         continue
                     
                     if not in_transaction_section:
                         continue
                     
-                    # Handle continuation lines
-                    if continuation_line:
-                        line = continuation_line + " " + line
-                        continuation_line = ""
+                    # Alliance Bank date patterns - try multiple formats
+                    # Format 1: DD/MM/YYYY or DD/MM/YY
+                    date_pattern1 = r'^(\d{1,2}/\d{1,2}/\d{2,4})\s+(.+)$'
+                    # Format 2: DDMMYYYY or DDMMYY
+                    date_pattern2 = r'^(\d{6,8})\s+(.+)$'
+                    # Format 3: DD MMM YYYY (e.g., 15 AUG 2023)
+                    date_pattern3 = r'^(\d{1,2}\s+[A-Z]{3}\s+\d{4})\s+(.+)$'
                     
-                    # Alliance date pattern (DDMMYY format)
-                    date_pattern = r'(\d{6})'
-                    amount_pattern = r'([\d,]+\.\d{2})'
+                    date_match = None
+                    date_format = None
                     
-                    match = re.search(f'{date_pattern}(.+?){amount_pattern}', line)
+                    # Try different date patterns
+                    for pattern, fmt in [(date_pattern1, 'slash'), (date_pattern2, 'numeric'), (date_pattern3, 'month')]:
+                        date_match = re.search(pattern, line)
+                        if date_match:
+                            date_format = fmt
+                            break
                     
-                    if match:
-                        date_str = match.group(1)
-                        description = match.group(2).strip()
-                        amount_str = match.group(3)
+                    if date_match:
+                        # If we have a previous transaction, finalize it
+                        if current_transaction:
+                            transactions.append(current_transaction)
                         
-                        # Parse date (DDMMYY format)
+                        logger.info(f"Found Alliance transaction start with {date_format} format")
+                        
+                        date_str = date_match.group(1)
+                        rest_of_line = date_match.group(2).strip()
+                        
+                        # Parse date based on format
                         try:
-                            # Convert DDMMYY to DDMMYYYY
-                            day = date_str[:2]
-                            month = date_str[2:4]
-                            year = "20" + date_str[4:6]  # Assuming 20xx
-                            full_date = f"{day}/{month}/{year}"
-                            transaction_date = datetime.strptime(full_date, '%d/%m/%Y').date()
-                        except ValueError:
+                            if date_format == 'slash':
+                                # Handle DD/MM/YYYY or DD/MM/YY
+                                if len(date_str.split('/')[-1]) == 2:
+                                    # Convert YY to YYYY
+                                    parts = date_str.split('/')
+                                    year = int(parts[2])
+                                    # Assume years 00-30 are 2000s, 31-99 are 1900s
+                                    if year <= 30:
+                                        parts[2] = str(2000 + year)
+                                    else:
+                                        parts[2] = str(1900 + year)
+                                    date_str = '/'.join(parts)
+                                transaction_date = datetime.strptime(date_str, '%d/%m/%Y').date()
+                            elif date_format == 'numeric':
+                                # Handle DDMMYYYY or DDMMYY
+                                if len(date_str) == 6:  # DDMMYY
+                                    day = date_str[:2]
+                                    month = date_str[2:4]
+                                    year = int(date_str[4:6])
+                                    # Convert YY to YYYY
+                                    if year <= 30:
+                                        year = 2000 + year
+                                    else:
+                                        year = 1900 + year
+                                    full_date = f"{day}/{month}/{year}"
+                                else:  # DDMMYYYY
+                                    day = date_str[:2]
+                                    month = date_str[2:4]
+                                    year = date_str[4:8]
+                                    full_date = f"{day}/{month}/{year}"
+                                transaction_date = datetime.strptime(full_date, '%d/%m/%Y').date()
+                            elif date_format == 'month':
+                                # Handle DD MMM YYYY
+                                transaction_date = datetime.strptime(date_str, '%d %b %Y').date()
+                            
+                            # Initialize transaction
+                            current_transaction = {
+                                'date': transaction_date.isoformat(),
+                                'description': '',
+                                'amount': 0.0,
+                                'balance': 0.0,
+                                'transaction_type': 'debit',
+                                'bank': 'alliance',
+                                'is_parsing': True
+                            }
+                            
+                            # Parse the rest of the line
+                            self._parse_alliance_transaction_line(current_transaction, rest_of_line)
+                            
+                            logger.info(f"Started Alliance transaction: {current_transaction['description']} - {current_transaction['amount']}")
+                            
+                        except ValueError as e:
+                            logger.warning(f"Error parsing Alliance date {date_str}: {e}")
                             continue
-                        
-                        # Parse amount
-                        try:
-                            amount = float(amount_str.replace(',', ''))
-                        except ValueError:
-                            continue
-                        
-                        # Check for CR indicator
-                        transaction_type = 'credit' if 'CR' in line else 'debit'
-                        
-                        transactions.append({
-                            'date': transaction_date.isoformat(),
-                            'description': description,
-                            'amount': amount,
-                            'balance': None,  # Alliance may not always show balance
-                            'transaction_type': transaction_type,
-                            'bank': 'alliance'
-                        })
                     else:
-                        # Check if this might be a continuation line
-                        if line and not re.search(r'\d{6}', line):
-                            continuation_line = line
+                        # This might be a continuation line for the current transaction
+                        if current_transaction and current_transaction.get('is_parsing', False):
+                            logger.debug("Processing Alliance continuation line")
+                            self._parse_alliance_continuation_line(current_transaction, line)
+                
+                # Add any remaining transaction
+                if current_transaction:
+                    transactions.append(current_transaction)
+                    current_transaction = None
         
+        # Clean up transactions
+        self._finalize_alliance_transactions(transactions)
+        
+        logger.info(f"Alliance parser found {len(transactions)} transactions")
         return transactions
+    
+    def _parse_alliance_transaction_line(self, transaction, line):
+        """Parse an Alliance Bank transaction line to extract description and amounts"""
+        # Look for amounts at the end of the line - Alliance typically shows withdrawal/deposit/balance
+        # Pattern: description [withdrawal] [deposit] balance
+        amount_pattern = r'([\d,]+\.\d{2})\s+([\d,]+\.\d{2})\s+([\d,]+\.\d{2})\s*$'
+        three_amounts_match = re.search(amount_pattern, line)
+        
+        if three_amounts_match:
+            # Found three amounts - withdrawal, deposit, balance
+            withdrawal = float(three_amounts_match.group(1).replace(',', ''))
+            deposit = float(three_amounts_match.group(2).replace(',', ''))
+            balance = float(three_amounts_match.group(3).replace(',', ''))
+            
+            # Determine transaction type and amount
+            if withdrawal > 0:
+                transaction['amount'] = -withdrawal
+                transaction['transaction_type'] = 'debit'
+            elif deposit > 0:
+                transaction['amount'] = deposit
+                transaction['transaction_type'] = 'credit'
+            
+            transaction['balance'] = balance
+            
+            # Extract description (part before amounts)
+            description_part = line[:three_amounts_match.start()].strip()
+            transaction['description'] = description_part
+            transaction['is_parsing'] = False  # Complete transaction
+            
+        else:
+            # Try pattern with two amounts (amount and balance)
+            two_amount_pattern = r'([\d,]+\.\d{2})\s+([\d,]+\.\d{2})\s*$'
+            two_amounts_match = re.search(two_amount_pattern, line)
+            
+            if two_amounts_match:
+                amount = float(two_amounts_match.group(1).replace(',', ''))
+                balance = float(two_amounts_match.group(2).replace(',', ''))
+                
+                # Check for CR/DR indicators
+                if 'CR' in line.upper():
+                    transaction['amount'] = amount
+                    transaction['transaction_type'] = 'credit'
+                else:
+                    transaction['amount'] = -amount
+                    transaction['transaction_type'] = 'debit'
+                
+                transaction['balance'] = balance
+                
+                # Extract description (part before amounts)
+                description_part = line[:two_amounts_match.start()].strip()
+                transaction['description'] = description_part
+                transaction['is_parsing'] = False  # Complete transaction
+                
+            else:
+                # Try single amount pattern
+                single_amount_pattern = r'([\d,]+\.\d{2})\s*$'
+                single_match = re.search(single_amount_pattern, line)
+                
+                if single_match:
+                    amount = float(single_match.group(1).replace(',', ''))
+                    
+                    # Check for CR/DR indicators
+                    if 'CR' in line.upper():
+                        transaction['amount'] = amount
+                        transaction['transaction_type'] = 'credit'
+                    else:
+                        transaction['amount'] = -amount
+                        transaction['transaction_type'] = 'debit'
+                    
+                    # Extract description (part before amount)
+                    description_part = line[:single_match.start()].strip()
+                    transaction['description'] = description_part
+                    transaction['is_parsing'] = False  # Complete transaction
+                    
+                else:
+                    # No amounts found, this is just the description start
+                    transaction['description'] = line.strip()
+                    # Keep parsing for continuation lines
+    
+    def _parse_alliance_continuation_line(self, transaction, line):
+        """Parse a continuation line for an Alliance Bank transaction"""
+        # Check if this line contains amounts (end of transaction)
+        amount_patterns = [
+            r'([\d,]+\.\d{2})\s+([\d,]+\.\d{2})\s+([\d,]+\.\d{2})\s*$',  # withdrawal, deposit, balance
+            r'([\d,]+\.\d{2})\s+([\d,]+\.\d{2})\s*$',                    # amount, balance
+            r'([\d,]+\.\d{2})\s*$'                                      # single amount
+        ]
+        
+        for pattern in amount_patterns:
+            match = re.search(pattern, line)
+            if match:
+                if len(match.groups()) == 3:
+                    # Three amounts
+                    withdrawal = float(match.group(1).replace(',', ''))
+                    deposit = float(match.group(2).replace(',', ''))
+                    balance = float(match.group(3).replace(',', ''))
+                    
+                    if withdrawal > 0:
+                        transaction['amount'] = -withdrawal
+                        transaction['transaction_type'] = 'debit'
+                    elif deposit > 0:
+                        transaction['amount'] = deposit
+                        transaction['transaction_type'] = 'credit'
+                    
+                    transaction['balance'] = balance
+                    
+                elif len(match.groups()) == 2:
+                    # Two amounts
+                    amount = float(match.group(1).replace(',', ''))
+                    balance = float(match.group(2).replace(',', ''))
+                    
+                    if 'CR' in line.upper():
+                        transaction['amount'] = amount
+                        transaction['transaction_type'] = 'credit'
+                    else:
+                        transaction['amount'] = -amount
+                        transaction['transaction_type'] = 'debit'
+                    
+                    transaction['balance'] = balance
+                    
+                else:
+                    # Single amount
+                    amount = float(match.group(1).replace(',', ''))
+                    
+                    if 'CR' in line.upper():
+                        transaction['amount'] = amount
+                        transaction['transaction_type'] = 'credit'
+                    else:
+                        transaction['amount'] = -amount
+                        transaction['transaction_type'] = 'debit'
+                
+                # Add any description before the amounts
+                description_part = line[:match.start()].strip()
+                if description_part:
+                    if transaction['description']:
+                        transaction['description'] += f" {description_part}"
+                    else:
+                        transaction['description'] = description_part
+                
+                transaction['is_parsing'] = False  # Complete transaction
+                return
+        
+        # No amounts found, this is additional description
+        # Skip obvious non-description lines
+        skip_patterns = [
+            r'^\s*$',  # Empty lines
+            r'^\s*[\d,]+\.\d{2}\s*$',  # Just amounts
+            r'^\s*CR\s*$',  # Just CR indicator
+            r'^\s*DR\s*$',  # Just DR indicator
+        ]
+        
+        should_skip = False
+        for pattern in skip_patterns:
+            if re.match(pattern, line, re.IGNORECASE):
+                should_skip = True
+                break
+        
+        if not should_skip and line.strip():
+            if transaction['description']:
+                transaction['description'] += f" {line.strip()}"
+            else:
+                transaction['description'] = line.strip()
+            logger.debug(f"Added to Alliance description: {line.strip()}")
+    
+    def _finalize_alliance_transactions(self, transactions):
+        """Finalize Alliance Bank transactions by cleaning up"""
+        # Remove incomplete transactions
+        transactions[:] = [t for t in transactions if not t.get('is_parsing', False)]
+        
+        # Clean up transaction objects
+        for transaction in transactions:
+            transaction.pop('is_parsing', None)
+            
+            # Clean up description
+            transaction['description'] = transaction['description'].strip()
+            
+            # Ensure amount is properly signed
+            if transaction['transaction_type'] == 'debit' and transaction['amount'] > 0:
+                transaction['amount'] = -transaction['amount']
+            elif transaction['transaction_type'] == 'credit' and transaction['amount'] < 0:
+                transaction['amount'] = abs(transaction['amount'])
+            
+            logger.debug(f"Finalized Alliance transaction: {transaction['description']} - {transaction['amount']}")
     
     def _parse_credit_card(self, pdf_path: str) -> List[Dict[str, Any]]:
         """Parse credit card PDF statement"""
