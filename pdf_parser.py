@@ -876,58 +876,192 @@ class PDFTransactionParser:
             logger.info(f"Alliance: Finalized transaction - Description: '{transaction['description']}' - Amount: {transaction['amount']} - Type: {transaction['transaction_type']}")
     
     def _parse_credit_card(self, pdf_path: str) -> List[Dict[str, Any]]:
-        """Parse credit card PDF statement"""
+        """Parse Maybank credit card PDF statement based on reference implementation"""
         transactions = []
+        in_transaction_section = False
+        current_card = None
         
-        with pdfplumber.open(pdf_path) as pdf:
-            for page in pdf.pages:
-                text = page.extract_text()
-                if not text:
-                    continue
+        # Extract year from filename if possible
+        filename = Path(pdf_path).stem
+        year_match = re.search(r'(\d{4})', filename)
+        if year_match:
+            year = year_match.group(1)
+        else:
+            year = str(datetime.now().year)
+        
+        logger.info(f"Credit card parser processing PDF, extracted year: {year}")
+        
+        try:
+            with pdfplumber.open(pdf_path) as pdf:
+                logger.info(f"Credit card parser processing PDF with {len(pdf.pages)} pages")
                 
-                lines = text.split('\n')
+                # Extract statement date from first page
+                first_page_text = pdf.pages[0].extract_text()
+                statement_date_match = re.search(r'Statement Date/\s+Tarikh Penyata\s+(\d{2} [A-Z]{3} \d{2})', first_page_text)
+                statement_date = statement_date_match.group(1) if statement_date_match else None
+                logger.info(f"Extracted statement date: {statement_date}")
                 
-                for line in lines:
-                    line = line.strip()
-                    
-                    # Credit card transaction pattern
-                    date_pattern = r'(\d{2}/\d{2}/\d{4})'
-                    amount_pattern = r'([\d,]+\.\d{2})'
-                    
-                    # Look for lines with posting date, transaction date, and amount
-                    match = re.search(f'{date_pattern}\\s+{date_pattern}(.+?){amount_pattern}', line)
-                    
-                    if match:
-                        posting_date_str = match.group(1)
-                        transaction_date_str = match.group(2)
-                        description = match.group(3).strip()
-                        amount_str = match.group(4)
+                for page_num, page in enumerate(pdf.pages, 1):
+                    logger.info(f"Processing credit card page {page_num}")
+                    text = page.extract_text()
+                    if not text:
+                        continue
                         
-                        # Parse dates
-                        try:
-                            posting_date = datetime.strptime(posting_date_str, '%d/%m/%Y').date()
-                            transaction_date = datetime.strptime(transaction_date_str, '%d/%m/%Y').date()
-                        except ValueError:
+                    lines = text.split('\n')
+                    
+                    for line_idx, line in enumerate(lines):
+                        line = line.strip()
+                        if not line:
                             continue
                         
-                        # Parse amount
-                        try:
-                            amount = float(amount_str.replace(',', ''))
-                        except ValueError:
+                        # Check for card section headers (e.g., "MUHAMMAD MAHERILHAM")
+                        if line == "MUHAMMAD MAHERILHAM" and line_idx + 1 < len(lines):
+                            next_line = lines[line_idx + 1].strip()
+                            card_pattern = r'([A-Z\s]*MASTERCARD[A-Z\s]*)\s*:\s*(\d{4}\s\d{4}\s\d{4}\s\d{4})'
+                            card_match = re.search(card_pattern, next_line)
+                            if card_match:
+                                card_type = card_match.group(1).strip()
+                                card_number = card_match.group(2)
+                                current_card = {
+                                    'type': card_type,
+                                    'number': card_number,
+                                    'masked_number': card_match.group(2)
+                                }
+                                logger.info(f"Detected credit card: {card_type} ({card_number})")
+                        
+                        # Check for transaction section headers
+                        if "Posting Date /" in line and "Transaction Date /" in line and "Transaction Description /" in line:
+                            in_transaction_section = True
+                            logger.info("Found credit card transaction section header")
                             continue
                         
-                        # Determine transaction type
-                        transaction_type = 'credit' if amount < 0 else 'debit'
+                        # Skip if not in transaction section or no current card
+                        if not in_transaction_section or current_card is None:
+                            continue
                         
-                        transactions.append({
-                            'date': transaction_date.isoformat(),
-                            'posting_date': posting_date.isoformat(),
-                            'description': description,
-                            'amount': abs(amount),
-                            'transaction_type': transaction_type,
-                            'bank': 'credit_card'
-                        })
+                        # Check for end of transaction section
+                        if "TOTAL CREDIT THIS MONTH" in line or "SUB TOTAL/JUMLAH" in line:
+                            in_transaction_section = False
+                            logger.info("Found end of credit card transaction section")
+                            continue
+                        
+                        # Skip header lines
+                        if any(header in line for header in [
+                            'MUHAMMAD MAHERILHAM', 'MASTERCARD IKHWAN', 'YOUR COMBINED FACILITY',
+                            'TAX INVOICE NO', 'GST', 'Page/Halaman', 'STATEMENT OF CREDIT'
+                        ]):
+                            continue
+                        
+                        # Credit card transaction pattern: DD/MM DD/MM Description Amount (with optional CR)
+                        transaction_pattern = r'^(\d{2}/\d{2})\s+(\d{2}/\d{2})\s+(.*?)(?:\s+([\d,.]+\.\d{2})\s*(CR)?)?$'
+                        transaction_match = re.match(transaction_pattern, line)
+                        
+                        if transaction_match:
+                            posting_date = transaction_match.group(1)
+                            transaction_date = transaction_match.group(2)
+                            description = transaction_match.group(3).strip()
+                            amount_str = transaction_match.group(4)
+                            cr_flag = transaction_match.group(5)
+                            
+                            # Handle amount and CR flag
+                            if amount_str and cr_flag:
+                                amount_str += " CR"
+                            
+                            # If no amount in current line, check next lines
+                            if not amount_str and line_idx + 1 < len(lines):
+                                for next_idx in range(line_idx + 1, min(line_idx + 3, len(lines))):
+                                    next_line = lines[next_idx].strip()
+                                    amount_only_pattern = r'^([\d,.]+\.\d{2})\s*(CR)?$'
+                                    amount_match = re.match(amount_only_pattern, next_line)
+                                    if amount_match:
+                                        amount_str = amount_match.group(1)
+                                        if amount_match.group(2):
+                                            amount_str += " CR"
+                                        break
+                                    elif not re.match(r'^\d{2}/\d{2}', next_line) and not any(header in next_line for header in [
+                                        'TOTAL CREDIT', 'JUMLAH KREDIT', 'TOTAL DEBIT', 'SUB TOTAL'
+                                    ]):
+                                        description += " " + next_line
+                            
+                            # Clean up description
+                            description = description.strip()
+                            
+                            # Handle USD transactions
+                            usd_pattern = r'TRANSACTED AMOUNT\s+USD\s+(\d+\.\d{2})'
+                            usd_match = re.search(usd_pattern, description)
+                            if usd_match:
+                                description = description.replace(usd_match.group(0), f"(USD {usd_match.group(1)})")
+                            
+                            # Only process if we have amount
+                            if amount_str:
+                                # Convert amount to float
+                                if "CR" in amount_str:
+                                    amount = float(amount_str.replace("CR", "").replace(",", ""))
+                                    transaction_type = "credit"
+                                else:
+                                    amount = -float(amount_str.replace(",", ""))  # Debits are negative
+                                    transaction_type = "debit"
+                                
+                                # Convert dates to standard format
+                                try:
+                                    if len(posting_date) == 5:  # DD/MM format
+                                        posting_date_obj = datetime.strptime(f"{posting_date}/{year}", "%d/%m/%Y")
+                                        transaction_date_obj = datetime.strptime(f"{transaction_date}/{year}", "%d/%m/%Y")
+                                        
+                                        posting_date_str = posting_date_obj.strftime("%Y-%m-%d")
+                                        transaction_date_str = transaction_date_obj.strftime("%Y-%m-%d")
+                                    else:
+                                        posting_date_str = posting_date
+                                        transaction_date_str = transaction_date
+                                except Exception as e:
+                                    logger.warning(f"Credit card date parsing error: {e}")
+                                    posting_date_str = posting_date
+                                    transaction_date_str = transaction_date
+                                
+                                # Collect notes from following lines
+                                notes = []
+                                for note_idx in range(line_idx + 1, min(line_idx + 4, len(lines))):
+                                    note_line = lines[note_idx].strip()
+                                    if not note_line:
+                                        continue
+                                    
+                                    if re.match(r'^\d{2}/\d{2}\s+\d{2}/\d{2}', note_line):
+                                        break
+                                    
+                                    if any(header in note_line for header in [
+                                        'Posting Date', 'TOTAL CREDIT', 'TOTAL DEBIT',
+                                        'Page/Halaman', 'SUB TOTAL', 'Tarikh'
+                                    ]):
+                                        break
+                                    
+                                    if any(keyword in note_line.upper() for keyword in [
+                                        'TRANSACTED AMOUNT', 'USD', 'EUR', 'SGD', 'EXCHANGE RATE'
+                                    ]) or (len(note_line) > 10 and not any(skip in note_line for skip in [
+                                        'MUHAMMAD', 'MASTERCARD', 'YOUR COMBINED'
+                                    ])):
+                                        notes.append(note_line)
+                                
+                                transaction = {
+                                    'date': transaction_date_str,
+                                    'posting_date': posting_date_str,
+                                    'description': description,
+                                    'amount': abs(amount),  # Always positive, type indicates direction
+                                    'transaction_type': transaction_type,
+                                    'bank': 'credit_card',
+                                    'card_type': current_card['type'],
+                                    'card_number': current_card['masked_number'],
+                                    'notes': '; '.join(notes) if notes else '',
+                                    'statement_date': statement_date
+                                }
+                                transactions.append(transaction)
+                                
+                                logger.info(f"Credit card transaction: {description} - {amount} ({transaction_type})")
         
+        except Exception as e:
+            logger.error(f"Error processing credit card PDF: {str(e)}")
+            raise
+        
+        logger.info(f"Credit card parser found {len(transactions)} transactions")
         return transactions
     
     def _generate_csv(self, transactions: List[Dict[str, Any]], bank_type: str) -> str:
@@ -940,7 +1074,7 @@ class PDFTransactionParser:
         
         # Standardize columns based on bank type
         if bank_type == 'credit_card':
-            columns = ['posting_date', 'date', 'description', 'amount', 'transaction_type']
+            columns = ['posting_date', 'date', 'description', 'amount', 'transaction_type', 'card_type', 'card_number', 'notes', 'statement_date']
         else:
             columns = ['date', 'description', 'amount', 'balance', 'transaction_type']
         
