@@ -187,7 +187,34 @@ async def process_pdf(
         
         # Process the PDF
         try:
-            result = parser.process_pdf(temp_file_path, processing_id, detected_bank_type)
+            # Run auto-detection first to check for credit cards
+            with tempfile.NamedTemporaryFile(delete=False, suffix='.pdf') as temp_detect:
+                with open(temp_file_path, 'rb') as source:
+                    temp_detect.write(source.read())
+                temp_detect_path = temp_detect.name
+            
+            # Extract first page text for detection
+            import pdfplumber
+            with pdfplumber.open(temp_detect_path) as pdf:
+                first_page_text = pdf.pages[0].extract_text() if pdf.pages else ""
+            
+            # Auto-detect bank type
+            auto_detected_type = parser.detect_bank_type(first_page_text)
+            logger.info(f"Auto-detected bank type: {auto_detected_type}")
+            
+            # Use credit card detection if found, otherwise use provided/detected type
+            if auto_detected_type == 'credit_card':
+                final_bank_type = 'credit_card'
+                logger.info("Using auto-detected credit card type")
+            else:
+                final_bank_type = detected_bank_type or auto_detected_type
+                logger.info(f"Using provided/fallback bank type: {final_bank_type}")
+            
+            # Clean up temp detection file
+            if os.path.exists(temp_detect_path):
+                os.unlink(temp_detect_path)
+            
+            result = parser.process_pdf(temp_file_path, processing_id, final_bank_type)
             logger.info(f"PDF processing result: {result}")
         except Exception as e:
             logger.error(f"PDF processing failed: {str(e)}")
