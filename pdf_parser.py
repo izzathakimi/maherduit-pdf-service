@@ -609,8 +609,33 @@ class PDFTransactionParser:
     
     def _parse_alliance_transaction_line(self, transaction, line):
         """Parse an Alliance Bank transaction line to extract description and amounts"""
-        # Look for amounts at the end of the line - Alliance typically shows withdrawal/deposit/balance
-        # Pattern: description [withdrawal] [deposit] balance
+        # Alliance Bank format: DESCRIPTION AMOUNT BALANCE [CR]
+        # Look for amounts at the end of the line
+        
+        # First try: description amount balance [CR]
+        amount_balance_cr_pattern = r'(.+?)\s+([\d,]+\.\d{2})\s+([\d,]+\.\d{2})\s+(CR|DR)?\s*$'
+        match = re.search(amount_balance_cr_pattern, line)
+        
+        if match:
+            description = match.group(1).strip()
+            amount = float(match.group(2).replace(',', ''))
+            balance = float(match.group(3).replace(',', ''))
+            cr_dr = match.group(4) if match.group(4) else ''
+            
+            # Determine transaction type
+            if 'CR' in cr_dr or 'CR' in line.upper():
+                transaction['amount'] = amount
+                transaction['transaction_type'] = 'credit'
+            else:
+                transaction['amount'] = -amount
+                transaction['transaction_type'] = 'debit'
+            
+            transaction['balance'] = balance
+            transaction['description'] = description
+            transaction['is_parsing'] = False  # Complete transaction
+            return
+        
+        # Fallback to original three amounts pattern
         amount_pattern = r'([\d,]+\.\d{2})\s+([\d,]+\.\d{2})\s+([\d,]+\.\d{2})\s*$'
         three_amounts_match = re.search(amount_pattern, line)
         
