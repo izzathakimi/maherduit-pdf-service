@@ -605,6 +605,12 @@ class PDFTransactionParser:
                         if current_transaction and current_transaction.get('is_parsing', False):
                             logger.info(f"Processing Alliance continuation line: {line}")
                             self._parse_alliance_continuation_line(current_transaction, line)
+                        else:
+                            # Log lines that are not being processed
+                            if current_transaction:
+                                logger.info(f"Alliance: Skipping line (transaction complete): {line}")
+                            else:
+                                logger.info(f"Alliance: Skipping line (no active transaction): {line}")
                 
                 # Add any remaining transaction
                 if current_transaction:
@@ -799,12 +805,16 @@ class PDFTransactionParser:
                 return
         
         # No amounts found, this is additional description
-        # Skip obvious non-description lines
+        # Skip obvious non-description lines but be more liberal with what we include
         skip_patterns = [
             r'^\s*$',  # Empty lines
             r'^\s*[\d,]+\.\d{2}\s*$',  # Just amounts
             r'^\s*CR\s*$',  # Just CR indicator
             r'^\s*DR\s*$',  # Just DR indicator
+            r'^\s*\(\s*RM\s*\)\s*$',  # Just (RM)
+            r'^\s*RM\s*$',  # Just RM
+            r'^Page \d+ of \d+$',  # Page numbers
+            r'^Halaman \d+ dari \d+$',  # Page numbers in Malay
         ]
         
         should_skip = False
