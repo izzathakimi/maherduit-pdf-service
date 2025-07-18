@@ -138,14 +138,9 @@ async def process_pdf(
         
         # Get bank type from form data or bank account
         detected_bank_type = bank_type  # Use the bank_type from form data if provided
-        logger.info(f"=== BANK TYPE DEBUGGING ===")
         logger.info(f"Bank type from form data: {bank_type}")
-        logger.info(f"Bank type type: {type(bank_type)}")
-        logger.info(f"Bank type is None: {bank_type is None}")
-        logger.info(f"Bank type is empty string: {bank_type == ''}")
         logger.info(f"Bank account ID provided: {bank_account_id}")
         logger.info(f"Supabase client available: {supabase is not None}")
-        logger.info(f"=== END DEBUGGING ===")
         
         # If bank_type not provided in form data, try to fetch from database
         if not detected_bank_type and bank_account_id and supabase:

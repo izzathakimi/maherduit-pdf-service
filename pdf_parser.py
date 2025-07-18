@@ -124,142 +124,81 @@ class PDFTransactionParser:
             }
     
     def _parse_maybank(self, pdf_path: str) -> List[Dict[str, Any]]:
-        """Parse Maybank PDF statement using reference implementation logic"""
+        """Parse Maybank PDF statement"""
         transactions = []
-        current_transaction = None
-        description_lines = []
-        in_transaction_section = False
         
         with pdfplumber.open(pdf_path) as pdf:
-            logger.info(f"Maybank parser: Processing {len(pdf.pages)} pages")
-            
-            for page_num, page in enumerate(pdf.pages, 1):
+            for page in pdf.pages:
                 text = page.extract_text()
                 if not text:
                     continue
                 
                 lines = text.split('\n')
-                logger.info(f"Maybank parser: Page {page_num} has {len(lines)} lines")
+                in_transaction_section = False
+                continuation_line = ""
                 
-                for line_num, line in enumerate(lines, 1):
+                for line in lines:
                     line = line.strip()
                     
-                    # Check for ENDING BALANCE
-                    if 'ENDING BALANCE' in line or 'BAKI AKHIR' in line:
-                        logger.info(f"Maybank parser: Found ENDING BALANCE at page {page_num}, line {line_num}")
-                        if current_transaction:
-                            current_transaction['description'] = '\n'.join(description_lines).strip()
-                            transactions.append(current_transaction)
-                        return transactions
-                    
-                    # Detect start of transaction table
-                    if 'URUSNIAGA AKAUN' in line and 'ACCOUNT TRANSACTIONS' in line:
-                        logger.info(f"Maybank parser: Found transaction section at page {page_num}, line {line_num}")
+                    # Check if we're in transaction section
+                    if "URUSNIAGA AKAUN" in line or "ACCOUNT TRANSACTIONS" in line:
                         in_transaction_section = True
                         continue
                     
-                    # Detect end of transaction table
-                    if line.startswith('Perhation') or line.startswith('PROTECTED BY PIDM'):
-                        if not line.startswith('PROTECTED BY PIDM UP TO RM250,000'):
-                            logger.info(f"Maybank parser: Found table footer at page {page_num}, line {line_num}")
-                            in_transaction_section = False
-                            continue
+                    # Check if we've reached the end
+                    if "ENDING BALANCE" in line or "BAKI AKHIR" in line:
+                        in_transaction_section = False
+                        continue
                     
                     if not in_transaction_section:
                         continue
                     
-                    # Skip header lines
-                    if any(header in line for header in [
-                        'ENTRY DATE', 'TARIKH MASUK', 'TRANSACTION DESCRIPTION', 
-                        'BUTIR URUSNIAGA', '進支日期', 'TRANSACTION AMOUNT',
-                        'STATEMENT BALANCE', '進支項說明', 'JENIS GST', 'JUMLAH URUSNIAGA'
-                    ]):
-                        logger.info(f"Maybank parser: Skipping header line {line_num}: {line}")
-                        continue
+                    # Handle continuation lines
+                    if continuation_line:
+                        line = continuation_line + " " + line
+                        continuation_line = ""
                     
-                    # Pattern for date and amounts (DD/MM/YY format from reference)
-                    date_pattern = r'^(\d{2}/\d{2}/\d{2})\s+(.*?)(?:\s+([\d,]+\.\d{2}[-+])\s+([\d,]+\.\d{2}))?$'
-                    date_match = re.search(date_pattern, line)
+                    # Maybank transaction pattern: Date Amount Balance Description
+                    date_pattern = r'(\d{2}/\d{2}/\d{4})'
+                    amount_pattern = r'([\d,]+\.\d{2})'
                     
-                    if date_match:
-                        logger.info(f"Maybank parser: Found new transaction at line {line_num}: {line}")
+                    match = re.search(f'{date_pattern}.*?{amount_pattern}.*?{amount_pattern}(.+)', line)
+                    
+                    if match:
+                        date_str = match.group(1)
+                        amount_str = match.group(2)
+                        balance_str = match.group(3)
+                        description = match.group(4).strip()
                         
-                        # If we have a previous transaction, save it
-                        if current_transaction:
-                            current_transaction['description'] = '\n'.join(description_lines).strip()
-                            transactions.append(current_transaction)
-                            logger.info(f"Maybank parser: Completed transaction: {current_transaction['date']} - {current_transaction['description'][:50]}...")
+                        # Parse date
+                        try:
+                            transaction_date = datetime.strptime(date_str, '%d/%m/%Y').date()
+                        except ValueError:
+                            continue
                         
-                        # Parse the new transaction
-                        date = date_match.group(1)
-                        initial_desc = date_match.group(2).strip() if date_match.group(2) else ''
+                        # Parse amount
+                        try:
+                            amount = float(amount_str.replace(',', ''))
+                            balance = float(balance_str.replace(',', ''))
+                        except ValueError:
+                            continue
                         
-                        # Handle cases where amount is on the same line
-                        if date_match.group(3) and date_match.group(4):
-                            amount_str = date_match.group(3).strip()
-                            balance = float(date_match.group(4).replace(',', ''))
-                            
-                            if amount_str.endswith('+'):
-                                amount = float(amount_str[:-1].replace(',', ''))
-                                transaction_type = 'credit'
-                            else:
-                                amount = float(amount_str[:-1].replace(',', ''))
-                                transaction_type = 'debit'
-                            
-                            current_transaction = {
-                                'date': datetime.strptime(date, '%d/%m/%y').date().isoformat(),
-                                'amount': amount,
-                                'balance': balance,
-                                'transaction_type': transaction_type,
-                                'bank': 'maybank'
-                            }
-                        else:
-                            current_transaction = {
-                                'date': datetime.strptime(date, '%d/%m/%y').date().isoformat(),
-                                'amount': None,
-                                'balance': None,
-                                'transaction_type': None,
-                                'bank': 'maybank'
-                            }
+                        # Determine transaction type based on balance change
+                        transaction_type = 'debit' if amount > 0 else 'credit'
                         
-                        description_lines = [initial_desc] if initial_desc else []
-                        
-                    elif line.strip():
-                        # Check for amount pattern in continuation lines
-                        amount_pattern = r'([\d,]+\.\d{2}[-+])\s+([\d,]+\.\d{2})$'
-                        amount_match = re.search(amount_pattern, line)
-                        
-                        if amount_match and current_transaction and current_transaction['amount'] is None:
-                            logger.info(f"Maybank parser: Found amount in continuation line {line_num}: {line}")
-                            amount_str = amount_match.group(1).strip()
-                            balance = float(amount_match.group(2).replace(',', ''))
-                            
-                            if amount_str.endswith('+'):
-                                amount = float(amount_str[:-1].replace(',', ''))
-                                transaction_type = 'credit'
-                            else:
-                                amount = float(amount_str[:-1].replace(',', ''))
-                                transaction_type = 'debit'
-                            
-                            current_transaction['amount'] = amount
-                            current_transaction['balance'] = balance
-                            current_transaction['transaction_type'] = transaction_type
-                            
-                        elif not any(skip in line for skip in [
-                            'STATEMENT DATE', 'ACCOUNT NUMBER', 'PAGE', 'MUKA',
-                            'PROTECTED BY PIDM', 'SAVINGS ACCOUNT-I', 'BEGINNING BALANCE',
-                            '進支日期', '戶口進支項', '結單存餘', 'GST', 'INCLUSIVE'
-                        ]):
-                            logger.info(f"Maybank parser: Adding description line {line_num}: {line}")
-                            description_lines.append(line)
-            
-            # Complete final transaction if we reach end of document
-            if current_transaction:
-                current_transaction['description'] = '\n'.join(description_lines).strip()
-                transactions.append(current_transaction)
-                logger.info(f"Maybank parser: Completed final transaction: {current_transaction['date']} - {current_transaction['description'][:50]}...")
+                        transactions.append({
+                            'date': transaction_date.isoformat(),
+                            'description': description,
+                            'amount': amount,
+                            'balance': balance,
+                            'transaction_type': transaction_type,
+                            'bank': 'maybank'
+                        })
+                    else:
+                        # Check if this might be a continuation line
+                        if line and not re.search(r'\d{2}/\d{2}/\d{4}', line):
+                            continuation_line = line
         
-        logger.info(f"Maybank parser: Extracted {len(transactions)} transactions")
         return transactions
     
     def _parse_cimb(self, pdf_path: str) -> List[Dict[str, Any]]:
