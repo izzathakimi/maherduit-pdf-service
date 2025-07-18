@@ -24,22 +24,30 @@ class PDFTransactionParser:
         """Detect bank type from PDF text content"""
         text_lower = pdf_text.lower()
         
-        # Check for bank-specific keywords first (more reliable)
+        # Check for credit card indicators first (more specific)
+        credit_card_indicators = [
+            'statement of credit card account',
+            'penyata akaun kad kredit',
+            'credit card statement',
+            'card statement',
+            'tax invoice',
+            'invois cukai',
+            'gst registration no'
+        ]
+        
+        if any(indicator in text_lower for indicator in credit_card_indicators):
+            logger.info(f"Detected credit card statement based on indicators")
+            return 'credit_card'
+        
+        # Check for bank-specific keywords
         if 'maybank' in text_lower or 'malayan banking' in text_lower or 'maybank islamic' in text_lower:
-            # Check if it's specifically a credit card statement
-            if 'credit card statement' in text_lower or 'card statement' in text_lower:
-                return 'credit_card'
             return 'maybank'
         elif 'cimb' in text_lower or 'commerce international' in text_lower:
-            if 'credit card statement' in text_lower or 'card statement' in text_lower:
-                return 'credit_card'
             return 'cimb'
         elif 'alliance' in text_lower or 'alliance bank' in text_lower:
-            if 'credit card statement' in text_lower or 'card statement' in text_lower:
-                return 'credit_card'
             return 'alliance'
         
-        # Only check for generic credit card indicators if no bank is identified
+        # Generic credit card check as fallback
         if ('credit card' in text_lower and 'statement' in text_lower) or \
            ('mastercard' in text_lower and 'statement' in text_lower) or \
            ('visa' in text_lower and 'statement' in text_lower):
@@ -914,20 +922,37 @@ class PDFTransactionParser:
                         if not line:
                             continue
                         
-                        # Check for card section headers (e.g., "MUHAMMAD MAHERILHAM")
-                        if line == "MUHAMMAD MAHERILHAM" and line_idx + 1 < len(lines):
-                            next_line = lines[line_idx + 1].strip()
-                            card_pattern = r'([A-Z\s]*MASTERCARD[A-Z\s]*)\s*:\s*(\d{4}\s\d{4}\s\d{4}\s\d{4})'
-                            card_match = re.search(card_pattern, next_line)
-                            if card_match:
-                                card_type = card_match.group(1).strip()
-                                card_number = card_match.group(2)
-                                current_card = {
-                                    'type': card_type,
-                                    'number': card_number,
-                                    'masked_number': card_match.group(2)
-                                }
-                                logger.info(f"Detected credit card: {card_type} ({card_number})")
+                        # Check for card section headers (look for MUHAMMAD MAHERILHAM variations)
+                        if ("MUHAMMAD MAHERILHAM" in line or "ENCIK MUHAMMAD MAHERILHAM" in line) and line_idx + 1 < len(lines):
+                            # Look for card pattern in the next few lines
+                            for check_idx in range(line_idx + 1, min(line_idx + 5, len(lines))):
+                                check_line = lines[check_idx].strip()
+                                # Look for Maybank card patterns or account numbers
+                                card_patterns = [
+                                    r'([A-Z\s]*MASTERCARD[A-Z\s]*)\s*:\s*(\d{4}\s\d{4}\s\d{4}\s\d{4})',
+                                    r'Account Nu[mber]*[:/]\s*(\d{4}\s\d{4}\s\d{4}\s\d{4})',
+                                    r'([A-Z\s]*CARD[A-Z\s]*)\s*[:-]\s*(\d{4}\s\d{4}\s\d{4}\s\d{4})'
+                                ]
+                                
+                                for pattern in card_patterns:
+                                    card_match = re.search(pattern, check_line)
+                                    if card_match:
+                                        if len(card_match.groups()) == 2:
+                                            card_type = card_match.group(1).strip() if card_match.group(1) else "MAYBANK CARD"
+                                            card_number = card_match.group(2)
+                                        else:
+                                            card_type = "MAYBANK CARD"
+                                            card_number = card_match.group(1)
+                                        
+                                        current_card = {
+                                            'type': card_type,
+                                            'number': card_number,
+                                            'masked_number': card_number
+                                        }
+                                        logger.info(f"Detected credit card: {card_type} ({card_number})")
+                                        break
+                                if current_card:
+                                    break
                         
                         # Check for transaction section headers
                         if "Posting Date /" in line and "Transaction Date /" in line and "Transaction Description /" in line:
