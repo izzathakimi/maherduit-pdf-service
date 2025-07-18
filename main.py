@@ -202,13 +202,22 @@ async def process_pdf(
             auto_detected_type = parser.detect_bank_type(first_page_text)
             logger.info(f"Auto-detected bank type: {auto_detected_type}")
             
-            # Use credit card detection if found, otherwise use provided/detected type
+            # Use credit card detection if found, otherwise prioritize provided type
             if auto_detected_type == 'credit_card':
                 final_bank_type = 'credit_card'
                 logger.info("Using auto-detected credit card type")
+            elif detected_bank_type:
+                # Always prefer the explicitly provided/selected bank type
+                final_bank_type = detected_bank_type
+                logger.info(f"Using provided bank type: {final_bank_type}")
+            elif auto_detected_type:
+                # Use auto-detection if available
+                final_bank_type = auto_detected_type
+                logger.info(f"Using auto-detected bank type: {final_bank_type}")
             else:
-                final_bank_type = detected_bank_type or auto_detected_type
-                logger.info(f"Using provided/fallback bank type: {final_bank_type}")
+                # Last resort fallback
+                final_bank_type = 'maybank'
+                logger.warning(f"No bank type detected, using fallback: {final_bank_type}")
             
             # Clean up temp detection file
             if os.path.exists(temp_detect_path):

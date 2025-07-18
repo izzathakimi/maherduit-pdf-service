@@ -53,8 +53,9 @@ class PDFTransactionParser:
            ('visa' in text_lower and 'statement' in text_lower):
             return 'credit_card'
         
-        # Default fallback
-        return 'maybank'
+        # Default fallback - return None to let main logic handle it
+        logger.info("No specific bank type detected, returning None for main logic to handle")
+        return None
     
     def process_pdf(self, pdf_path: str, processing_id: str, bank_type: str = None) -> Dict[str, Any]:
         """Main method to process PDF and extract transactions"""
